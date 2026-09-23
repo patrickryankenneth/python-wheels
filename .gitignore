@@ -1,0 +1,36 @@
+# --- Python bytecode / cache ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Build artifacts (setuptools and hatchling both use these) ---
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- pywheels' own local scratch space ---
+# .pywheels-cache/ is cli.py's --workdir default (where `pywheels verify`
+# downloads release assets to when not using --local-dir).
+# release-assets/ looks like the same kind of thing from manual testing -
+# if it's meant to be committed as test fixtures, remove this line and
+# `git add -f` it instead.
+.pywheels-cache/
+release-assets/
+
+# --- Virtual environments ---
+# Matches any dir ending in "env" - venv, .venv, env, my-project-env,
+# whatever you or anyone else names theirs - so this never needs a
+# personal/local env name added to it.
+*env/
+*ENV/
+
+# --- Editors / OS cruft ---
+.vscode/
+.idea/
+.DS_Store
+
+# --- Test/type-check caches, if you add pytest/mypy/ruff later ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

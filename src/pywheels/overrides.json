@@ -1,0 +1,6 @@
+{
+  "dbt-oss": {
+    "strategy": "source-build-probe",
+    "note": "PyPI's dbt-oss sdist is a stub: its custom PEP 517 backend (_dbt_sa_build) downloads a prebuilt wheel from a hardcoded GitHub release URL keyed by platform tag, checked against an embedded sha256 manifest, with no real source to build otherwise. --only-binary=:all: can never see this - pip's index metadata never advertises a real wheel at all, stub or not - so a full source build (which actually invokes the backend) is the only way to know whether upstream truly covers a given platform."
+  }
+}

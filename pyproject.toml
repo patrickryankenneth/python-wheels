@@ -1,0 +1,49 @@
+[project]
+name = "python-wheels"
+version = "0.1.0"
+description = "Verify Sigstore-attested wheels from python-wheels-builds before installing"
+requires-python = ">=3.9"
+dependencies = []
+
+# sigstore is optional: pywheels falls back to the `gh` CLI (a system
+# binary, not a pip dependency) if it's absent, and fails closed - refuses
+# to treat a wheel as trusted - only if NEITHER is available. See
+# pywheels/verify.py and `pywheels doctor`.
+#
+# Pinned to a range, not left open-ended: 4.0 <= version < 4.6 is the
+# range this scaffold was actually built and tested against (4.5.0, at
+# time of writing). Bump the upper bound deliberately after testing a
+# newer release, rather than always taking latest - a brand-new release
+# hasn't had time to be exercised by the broader ecosystem yet, which
+# matters more for a security-verification dependency than for most
+# others. We can pin our own dependency this way; we can't pin the `gh`
+# CLI or git the same way since they're not pip packages - the closest
+# equivalent there is installing them via your OS's package manager
+# (apt/brew/choco) rather than a bleeding-edge standalone installer, since
+# distro packaging tends to lag upstream by a bit, which is a feature here.
+[project.optional-dependencies]
+sigstore = ["sigstore>=4.0,<4.6"]
+test = ["pytest>=8"]
+
+[project.scripts]
+pywheels = "pywheels.cli:main"
+python-wheels = "pywheels.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# hatchling's default package discovery looks for a directory matching the
+# normalized project name (python-wheels -> python_wheels). Our importable
+# package is still named `pywheels/` on purpose (see the pyproject/import
+# naming discussion elsewhere), and it now lives under src/ - so it has to
+# be told explicitly where to find it, or the wheel build will fail to
+# locate any package at all. Giving "src/pywheels" (not just "pywheels")
+# is what tells hatchling to strip the src/ prefix - the wheel still ends
+# up with a top-level `pywheels/`, so nothing about the import path or the
+# [project.scripts] entry points below changes.
+[tool.hatch.build.targets.wheel]
+packages = ["src/pywheels"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
