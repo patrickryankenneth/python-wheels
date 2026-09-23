@@ -1,98 +1,74 @@
-# python-wheels-builds
+# python-wheels
 
-Reproducible, attested builds of upstream Python packages for platforms the
-upstream project doesn't publish official wheels for — starting with
-[`dbt-oss`](https://github.com/dbt-labs/dbt-oss) / `dbt-core` on
-**Windows ARM64**.
+**Status: planned, not yet built.** This repo will hold the `python-wheels`
+CLI. Nothing here works yet — this README is the plan.
 
-This repo doesn't fork or modify the packages it builds. It checks out an
-exact upstream git tag, builds it unmodified, and cryptographically attests
-both *what was built* and *where it came from*, so anyone downloading a
-wheel from here can verify it matches upstream — without having to trust
-this repo blindly.
+## The problem
 
-## Why this exists
+Some Python packages don't ship a wheel for your platform: an
+uncommon architecture, Alpine/musl instead of glibc, an OS upstream doesn't
+target, or just a combination nobody's gotten around to building for. Right
+now the options are "build it from source yourself, every time" or "hope
+someone in the community hosts one somewhere."
 
-Some popular Python packages with native (Rust/C) extensions don't ship
-Windows ARM64 wheels yet, even though the upstream source builds fine there.
-This project cross-builds those wheels on real `windows-11-arm` runners and
-publishes them, with enough provenance attached that the build can be
-verified rather than trusted.
+It's also not always upstream being lazy. PyPI caps a project at 10GB of
+total storage, and wheels for every platform/arch/Python-version
+combination add up fast — that's part of why projects like PyTorch host
+some of their wheels off-PyPI and point people at an extra index instead.
+`python-wheels` is aimed at exactly that situation: popular packages that
+can't or don't publish a wheel for your platform, for any reason.
 
-This is the first package (`dbt-oss` / `dbt-core`); the workflow is written
-to generalize to others.
-
-## How a build works
-
-The [`build-dbt-oss-win-arm64`](.github/workflows/build-dbt-oss-win-arm64.yml)
-workflow, on manual dispatch:
-
-1. **Resolves** the requested git tag in `dbt-labs/dbt-oss` to an exact commit
-   SHA via `git ls-remote` (no floating tags).
-2. **Checks out** that exact commit and verifies the working tree is clean
-   and `HEAD` matches the resolved SHA — no drift, no local patches.
-3. **Builds** the requested wheel(s) with `maturin build --release`, one at a
-   time, into isolated `dist/<name>/` folders. For the `dbt-oss` name, the
-   `name` field in `pyproject.toml` is temporarily renamed and restored
-   immediately after — mirroring upstream's own `release-v2.yml` "Rename
-   pyproject for oss wheel" step, since `dbt-oss` and `dbt-core` are the same
-   codebase under two package names during their naming transition.
-4. **Re-verifies** afterward that no tracked source file was modified and
-   `HEAD` still matches the resolved SHA, then records the upstream repo,
-   tag, and commit in `upstream-source.json`.
-5. **Attests**, per wheel:
-   - **Build provenance** ([`actions/attest-build-provenance`](https://github.com/actions/attest-build-provenance)) — proves the wheel was built by *this* workflow, on *this* commit of *this* repo, not tampered with afterward.
-   - **Upstream source** (`actions/attest`, custom predicate type) — proves the wheel corresponds to the exact upstream repo/tag/commit recorded in `upstream-source.json`.
-
-   Each wheel gets its own single-subject attestation rather than one shared
-   attestation covering both, so a consumer verifying one wheel never has to
-   reason about another wheel's provenance.
-6. **Publishes** a GitHub Release with the wheel(s) attached, after the
-   release job independently re-verifies every attestation bundle with
-   `gh attestation verify` and sanity-checks that each wheel's bundle is
-   distinct.
-
-## Verifying a wheel yourself
-
-You don't have to trust this repo — verify it:
+## What it will do
 
 ```bash
-gh attestation verify dbt_oss-<version>-<platform>.whl --repo patrickryankenneth/python-wheels-builds
-gh attestation verify dbt_oss-<version>-<platform>.whl --repo patrickryankenneth/python-wheels-builds \
-  --predicate-type https://patrickryankenneth.github.io/attestations/upstream-source/v1
+python-wheels install some-package
 ```
 
-The first confirms the wheel was built by this repo's workflow, unmodified
-since. The second confirms which upstream commit it was built from. Both are
-backed by Sigstore-signed, GitHub-hosted attestations — not by anything this
-repo self-asserts in a README.
+1. **Check upstream first.** If `some-package` already has a compatible
+   wheel on PyPI for your platform, just install that — this tool should
+   get out of the way whenever upstream already has you covered.
+2. **Fall back, but verify.** If there's no upstream wheel, look for one
+   built by this project (via the `--extra-index-url` at
+   [python-wheels.github.io](https://python-wheels.github.io)) and, before
+   installing anything, verify:
+   - the wheel's build provenance attestation (it was built by the
+     expected CI workflow, unmodified since),
+   - its upstream-source attestation (it was built from the real, tagged
+     upstream commit — not a fork or a patched copy).
 
-## The bigger picture
+   See [python-wheels-builds](https://github.com/patrickryankenneth/python-wheels-builds)
+   for how those attestations are generated. If either check fails, the
+   install is refused rather than silently falling back to source.
+3. **Fail loudly, not silently.** No unverified wheel, no unattested
+   source, no quiet fallback to "just trust it."
 
-This repo is one piece of a small trust chain:
+## Where the wheels actually come from
 
-| Repo | Role |
-|---|---|
-| **python-wheels-builds** (this repo) | Builds wheels, attests build provenance + upstream source, publishes GitHub Releases. |
-| **python-wheels.github.io** | Hosts a [PEP 503](https://peps.python.org/pep-0503/) simple index pointing at the released wheels, so they're `pip`-installable via `--extra-index-url`. |
-| **python-wheels** (CLI, planned) | A thin installer — e.g. `python-wheels install dbt-oss` — that resolves the right wheel for your platform, runs the same `gh attestation verify` checks automatically before installing, and fails closed if verification doesn't pass. |
+This repo is only the installer. The wheels themselves are built and
+attested in [python-wheels-builds](https://github.com/patrickryankenneth/python-wheels-builds),
+and served from the index at
+[python-wheels.github.io](https://python-wheels.github.io). `python-wheels`
+is the piece that ties those two together and does the verification so you
+don't have to run `gh attestation verify` by hand.
 
-The goal of the CLI is that a user never has to run the `gh attestation
-verify` commands above by hand, or implicitly trust that this GitHub account
-hasn't been compromised — the tool checks it for them, every install,
-before any code from the wheel runs. The same attestation pattern is meant
-to extend to other packages beyond `dbt-oss`, using this repo's workflow as
-the template.
+## Longer-term direction
 
-## Status
+The build side is currently one hand-tuned workflow for one package
+(`dbt-oss`/`dbt-core` on Windows ARM64). The goal is to turn that into a
+standardized, reproducible build recipe that can target other
+popular PyPI packages missing wheels for a given platform — starting with
+the platforms that come up most often (Alpine/musl, less-common
+architectures, newer Python versions upstream hasn't built for yet), rather
+than trying to cover everything at once.
 
-Early — one package, manual `workflow_dispatch` builds, no automated
-tracking of new upstream releases yet. Treat wheels published here as
-independently verifiable, not as an official or endorsed distribution of
-`dbt-oss`/`dbt-core`.
+## Not yet decided
 
-## Security
+- Exact CLI surface beyond `install` (list available platforms? show why a
+  package fell back? a way to request a new package/platform combo?)
+- How package/platform requests get prioritized once this covers more than
+  one package
+- Packaging and release process for the CLI itself
 
-If you find an issue with the build process, the attestation setup, or a
-mismatch between a published wheel and its claimed upstream source, please
-open an issue in this repo.
+Contributions and issues on any of the above are welcome even at this
+early stage — this README will get replaced by real docs once there's
+something to install.
