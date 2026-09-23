@@ -88,6 +88,13 @@ class VerifyReport:
     attestations: list = field(default_factory=list)  # list[AttestationResult]
     archive_checked: bool = False
     archive_ok: Optional[bool] = None
+    # Set when archive_ok is False *because we never got predicate content
+    # to check against* (e.g. `gh attestation download` failed) rather than
+    # because we checked it and it genuinely didn't match. Still fails
+    # closed either way - see verify_wheel - but this lets callers show an
+    # actionable message instead of a bare "FAILED" that looks identical to
+    # a real hash mismatch.
+    archive_check_error: Optional[str] = None
 
     @property
     def ok(self) -> bool:
@@ -218,6 +225,17 @@ def _verify_with_gh(wheel_path: Path, *, repo: str, workflow_file: str, upstream
 
     # Bonus, not required: pull predicate content too, purely for the
     # archive-digest check below. A plain download - no sigstore parsing.
+    # NOTE: this can fail for reasons that have nothing to do with the
+    # wheel itself or with the identity checks above - `gh attestation
+    # download` is a separate code path in `gh` from `verify identity` and
+    # can fail on its own (network blip, rate limit, a `gh` bug, etc). The
+    # identity checks above already ran and stand on their own, so we
+    # don't turn this into a VerificationError - but we DO surface *why*
+    # it failed instead of swallowing it, so a caller checking the archive
+    # digest afterward can tell "we never got to check" apart from "we
+    # checked and it didn't match", and can actually see the real reason
+    # instead of guessing. See VerifyReport.archive_check_error.
+    download_error = None
     try:
         bundle_path = _gh_download_bundle(wheel_path, repo)
         for line_path in _split_bundle_lines(bundle_path):
@@ -225,10 +243,10 @@ def _verify_with_gh(wheel_path: Path, *, repo: str, workflow_file: str, upstream
             for r in results:
                 if r.predicate_type == predicate_type and not r.predicate:
                     r.predicate = predicate
-    except VerificationError:
-        pass  # identity checks above already ran and stand on their own
+    except VerificationError as exc:
+        download_error = str(exc)
 
-    return results
+    return results, download_error
 
 
 # ------------------------------------------------------------------- main
@@ -270,7 +288,7 @@ def verify_wheel(
             wheel_path, bundle_jsonl_path, repo=repo, workflow_file=workflow_file, ref=ref, verbose=verbose,
         )
     elif chosen == "gh":
-        report.attestations = _verify_with_gh(
+        report.attestations, report.archive_check_error = _verify_with_gh(
             wheel_path, repo=repo, workflow_file=workflow_file, upstream_predicate_type=upstream_predicate_type,
             verbose=verbose,
         )
@@ -285,7 +303,17 @@ def verify_wheel(
             None,
         )
         if expected is None:
+            # Still fail closed - we have no digest to trust the archive
+            # against, whether that's because the predicate genuinely
+            # doesn't carry one or because we never fetched it. But make
+            # the two cases distinguishable to the caller: if a download
+            # error is on record, this ISN'T a real digest mismatch.
             report.archive_ok = False
+            if report.archive_check_error is None:
+                report.archive_check_error = (
+                    "no snapshot_archive_sha256 found in any verified attestation's predicate "
+                    "(predicate content was retrieved, but the digest was genuinely absent)"
+                )
         else:
             actual = hashlib.sha256(source_archive_path.read_bytes()).hexdigest()
             report.archive_ok = (actual == expected)

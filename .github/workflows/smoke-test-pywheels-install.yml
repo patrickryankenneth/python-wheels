@@ -28,9 +28,18 @@ jobs:
           $env:PROCESSOR_ARCHITECTURE
           python -c "import platform; print(platform.machine(), platform.architecture())"
 
-      - name: Install pywheels from source
+      - name: Install pywheels from source (with sigstore extra)
         shell: pwsh
-        run: pip install -e .
+        # The sigstore extra makes `doctor`/`verify_wheel`'s "auto" backend
+        # selection prefer sigstore over gh (see verify.py: sigstore_available()
+        # is checked first). sigstore verifies fully offline against the
+        # bundle file github_release.py already downloaded via plain
+        # urllib, so it never calls `gh attestation download` at all - it
+        # sidesteps whatever is failing there entirely, whatever the actual
+        # cause turns out to be (see verify.py's archive_check_error, which
+        # now surfaces that cause instead of swallowing it, for if/when the
+        # gh backend needs debugging directly).
+        run: pip install -e ".[sigstore]"
 
       - name: Check backend availability
         shell: pwsh

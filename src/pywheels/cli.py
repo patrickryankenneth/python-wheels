@@ -179,6 +179,8 @@ def _cmd_verify(args: argparse.Namespace) -> int:
 
     if report.archive_checked:
         print(f"[{'OK' if report.archive_ok else 'FAILED'}] source archive digest")
+        if not report.archive_ok and report.archive_check_error:
+            print(f"    {report.archive_check_error}", file=sys.stderr)
 
     if report.ok:
         print(f"\n{args.package}: verified OK")
@@ -323,6 +325,8 @@ def _cmd_install(args: argparse.Namespace) -> int:
         print(f"[{status}] {a.predicate_type or '(unknown predicate)'}")
     if report.archive_checked:
         print(f"[{'OK' if report.archive_ok else 'FAILED'}] source archive digest")
+        if not report.archive_ok and report.archive_check_error:
+            print(f"    {report.archive_check_error}", file=sys.stderr)
 
     if not report.ok:
         print(f"\n{args.package}: VERIFICATION FAILED for {tag} - refusing to recommend this wheel", file=sys.stderr)
