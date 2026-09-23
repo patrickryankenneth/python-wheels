@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/smoke-test-pywheels-install.yml'
       - 'pywheels/**'
+      - 'src/pywheels/**'
 
 jobs:
   install-on-win-arm64:
