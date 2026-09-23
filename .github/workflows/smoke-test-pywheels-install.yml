@@ -39,7 +39,7 @@ jobs:
         # cause turns out to be (see verify.py's archive_check_error, which
         # now surfaces that cause instead of swallowing it, for if/when the
         # gh backend needs debugging directly).
-        run: pip install -e ".[sigstore]"
+        run: pip install -e "."
 
       - name: Check backend availability
         shell: pwsh
