@@ -1,0 +1,72 @@
+name: smoke-test-pywheels-install
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/smoke-test-pywheels-install.yml'
+      - 'pywheels/**'
+
+jobs:
+  install-on-win-arm64:
+    runs-on: windows-11-arm
+    env:
+      PYWHEELS_REPO: patrickryankenneth/python-wheels-builds
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: System info
+        shell: pwsh
+        run: |
+          [System.Environment]::OSVersion
+          $env:PROCESSOR_ARCHITECTURE
+          python -c "import platform; print(platform.machine(), platform.architecture())"
+
+      - name: Install pywheels from source
+        shell: pwsh
+        run: pip install -e .
+
+      - name: Check backend availability
+        shell: pwsh
+        run: pywheels doctor
+
+      - name: pywheels install (should fall through to our repo on this platform)
+        shell: pwsh
+        run: |
+          pywheels install dbt-oss==2.0.5 `
+            --tag dbt-oss-v2.0.5 `
+            --workflow build-dbt-oss-win-arm64.yml `
+            -v | Tee-Object -FilePath install-output.txt
+
+      - name: Assert the override actually detected the win-arm64 gap
+        shell: pwsh
+        run: |
+          if (Select-String -Path install-output.txt -Pattern "upstream has wheels" -Quiet) {
+            Write-Error "expected the upstream check to FAIL on win-arm64 (dbt-oss's manifest has no win_arm64 entry) - it reported success instead. Either the override broke, or upstream now ships a real win_arm64 wheel and this override can be retired."
+            exit 1
+          }
+          if (-not (Select-String -Path install-output.txt -Pattern "verified OK" -Quiet)) {
+            Write-Error "expected our repo's wheel to verify OK here - it didn't. See the full output above."
+            exit 1
+          }
+          Write-Host "confirmed: upstream check correctly failed on this platform, our wheel verified instead"
+
+      - name: Run the exact command pywheels recommended
+        shell: pwsh
+        run: |
+          $line = Select-String -Path install-output.txt -Pattern '^\s\s+pip install' | Select-Object -First 1
+          if (-not $line) { Write-Error "no 'pip install' line found in pywheels' output"; exit 1 }
+          $cmd = $line.Line.Trim()
+          Write-Host "running: $cmd"
+          Invoke-Expression $cmd
+
+      - name: Functional check - does the installed package actually run
+        shell: pwsh
+        run: |
+          python -c "import dbt; print('imported OK from', dbt.__file__)"
+          pip show dbt-oss
