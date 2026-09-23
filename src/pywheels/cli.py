@@ -388,6 +388,18 @@ def _cmd_doctor(_args: argparse.Namespace) -> int:
 
 
 def main(argv=None) -> None:
+    # stdout is block-buffered (not line-buffered) whenever it isn't a real
+    # terminal - which is exactly the case under CI - while stderr is
+    # always unbuffered. Left alone, that means every stderr line (our
+    # archive_check_error diagnostics, verification failure messages, etc)
+    # gets flushed immediately while stdout's lines sit queued until the
+    # process exits - so in a captured CI log, the "why it failed" lines
+    # appear to jump to the top, ahead of the OK/FAILED context they're
+    # explaining, instead of appearing where they were actually printed.
+    # Force line-buffering so stdout and stderr interleave in real order.
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+
     parser = _build_parser()
     args = parser.parse_args(argv)
 

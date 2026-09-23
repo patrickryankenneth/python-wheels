@@ -200,8 +200,17 @@ def _gh_verify_identity(wheel_path: Path, repo: str, signer_workflow: str, predi
 
 def _gh_download_bundle(wheel_path: Path, repo: str) -> Path:
     tmpdir = Path(tempfile.mkdtemp(prefix="pywheels-gh-"))
+    # `gh` runs with cwd=tmpdir (below) so its output bundle lands somewhere
+    # we can glob cleanly, isolated from anything else in the caller's cwd.
+    # wheel_path may be relative (e.g. the CLI's default --workdir is
+    # ".pywheels-cache") - resolved against the CALLER's cwd, not tmpdir.
+    # Passing it through unresolved means `gh` looks for it relative to
+    # tmpdir instead, where it never exists - it then fails trying to open
+    # the wheel to hash it, in a way that reads like an attestation/archive
+    # problem but is really just this path bug. Resolve before handing it
+    # to a subprocess running in a different directory.
     proc = subprocess.run(
-        ["gh", "attestation", "download", str(wheel_path), "--repo", repo],
+        ["gh", "attestation", "download", str(wheel_path.resolve()), "--repo", repo],
         capture_output=True, text=True, cwd=tmpdir,
     )
     if proc.returncode != 0:
