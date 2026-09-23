@@ -1,8 +1,30 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
 [project]
 name = "python-wheels"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Verify Sigstore-attested wheels from python-wheels-builds before installing"
+readme = "README.md"
 requires-python = ">=3.9"
+authors = [{ name = "Patrick Ryan", email = "patrickryankenneth@gmail.com" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["wheels", "pip", "sigstore", "attestation", "supply-chain", "slsa", "provenance"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Topic :: Security",
+  "Topic :: System :: Software Distribution",
+]
+# No required deps, and none planned - the whole design is "verify with
+# whatever's already there" (sigstore if installed, else the `gh` binary,
+# which isn't a pip dependency at all). Nothing here needs a transitive
+# dependency pinned either, for the same reason.
 dependencies = []
 
 # sigstore is optional: pywheels falls back to the `gh` CLI (a system
@@ -29,9 +51,15 @@ test = ["pytest>=8"]
 pywheels = "pywheels.cli:main"
 python-wheels = "pywheels.cli:main"
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[project.urls]
+Homepage = "https://github.com/patrickryankenneth/python-wheels"
+Builds = "https://github.com/patrickryankenneth/python-wheels-builds"
+Index = "https://python-wheels.github.io"
+Issues = "https://github.com/patrickryankenneth/python-wheels/issues"
+Changelog = "https://github.com/patrickryankenneth/python-wheels/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "src/pywheels/__init__.py"
 
 # hatchling's default package discovery looks for a directory matching the
 # normalized project name (python-wheels -> python_wheels). Our importable

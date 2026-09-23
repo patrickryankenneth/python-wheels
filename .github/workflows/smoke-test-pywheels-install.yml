@@ -14,8 +14,16 @@ jobs:
     env:
       PYWHEELS_REPO: patrickryankenneth/python-wheels-builds
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
     steps:
       - uses: actions/checkout@v4
+
+      # ⚡ Restore Python toolcache: takes ~3 seconds instead of 3 minutes
+      - name: Cache Python toolcache (Windows ARM64)
+        uses: actions/cache@v4
+        with:
+          path: C:\hostedtoolcache\windows\Python
+          key: toolcache-python-3.11-win-arm64
 
       - uses: actions/setup-python@v5
         with:
