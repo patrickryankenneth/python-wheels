@@ -5,6 +5,17 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-09-26
+
+### Changed
+
+- Added an explicit non-affiliation disclaimer - `python-wheels` is an
+  independent, unofficial project, not affiliated with, endorsed by, or
+  sponsored by PyPA, PyPI, or the Python Software Foundation. Added to
+  README.md, the `pywheels`/`pywheels.cli` module docstrings, the
+  top-level `pywheels -h` output (`description`/`epilog`), and the PyPI
+  summary (`description` in `pyproject.toml`).
+
 ## [0.1.0] - 2026-09-23
 
 Initial release.
@@ -41,4 +52,5 @@ attestation recorded.
 - Initial attested build: `dbt-oss` for `win_arm64`, filling a real gap
   upstream doesn't cover on that platform yet.
 
+[0.1.1]: https://github.com/patrickryankenneth/python-wheels/releases/tag/v0.1.1
 [0.1.0]: https://github.com/patrickryankenneth/python-wheels/releases/tag/v0.1.0

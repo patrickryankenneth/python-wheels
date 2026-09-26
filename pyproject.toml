@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "python-wheels"
 dynamic = ["version"]
-description = "Verify Sigstore-attested wheels from python-wheels-builds before installing"
+description = "Independent, unofficial tool to verify Sigstore-attested wheels from python-wheels-builds before installing"
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "Patrick Ryan", email = "patrickryankenneth@gmail.com" }]

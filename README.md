@@ -4,6 +4,16 @@
 also installed as `python-wheels`) verifies and installs attested wheels
 today. First attested build shipped: `dbt-oss` for `win_arm64`.
 
+> **Disclaimer:** `python-wheels` is an independent, unofficial project. It
+> is **not affiliated with, endorsed by, or sponsored by** the Python
+> Packaging Authority (PyPA), the Python Software Foundation, or PyPI.
+> "PyPI," "Python," and the Python logo are trademarks of the PSF; this
+> project is a third-party tool that builds on top of the public PyPI
+> index, `pip`, and standard packaging specs (PEP 427, PEP 503) - it does
+> not host, mirror, or modify PyPI itself, and the `python-wheels-builds`
+> and `python-wheels.github.io` repos referenced below are this project's
+> own infrastructure, not official Python infrastructure.
+
 ## The problem
 
 Some Python packages don't ship a wheel for your platform: an
