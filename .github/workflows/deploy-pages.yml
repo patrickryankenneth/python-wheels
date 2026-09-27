@@ -1,4 +1,4 @@
-name: Universal Pages Deployer
+name: Universal Site Adapter
 
 on:
   push:
@@ -7,19 +7,20 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write # Needed to mirror index.html for Vercel/Cloudflare if non-custom
+  contents: read # Secure: No push access required!
   pages: write
   id-token: write
 
 concurrency:
   group: "pages"
-  cancel-in-progress: false # Prevents corrupted CDN deployments
+  cancel-in-progress: false
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
-    outputs:
-      is_custom: ${{ steps.site-detect.outputs.is_custom }}
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -29,22 +30,34 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Prepare site payload (Smart Detect)
-        id: site-detect
+      - name: Build site payload (_site/)
         env:
           REPO_NAME: ${{ github.repository }}
         run: |
-          pip install markdown==3.7
+          # Pinned by wheel hash for supply-chain integrity. To update: bump the
+          # version, run `pip hash` on the new downloaded wheel, and replace the hash below.
+          pip install --require-hashes --only-binary=:all: \
+            markdown==3.7 \
+            --hash=sha256:7eb6df5690b81a1d7942992c97fad2938e956e79df20cbc6186e9c3a77b1c803
+          
           python3 - << 'EOF'
-          import os
-          import shutil
-          import subprocess
-          import markdown
+          import os, shutil, subprocess, markdown
 
-          repo_name = os.environ.get("REPO_NAME", "Repository").split("/")[-1]
           os.makedirs("_site", exist_ok=True)
+          repo_name = os.environ.get("REPO_NAME", "Site").split("/")[-1]
+          tracked = subprocess.check_output(["git", "ls-files"], text=True).splitlines()
 
-          # Check if an index.html exists and is not auto-generated
+          # Strict web-asset allowlist
+          WEB_FILES = {"index.html", "favicon.ico", "robots.txt", "sitemap.xml", "CNAME", "404.html"}
+          WEB_DIRS = {"assets", "css", "js", "images", "img", "fonts", "static", "public", "docs", "media"}
+          WEB_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".avif", ".css", ".pdf"}
+
+          def is_safe_asset(filepath):
+              parts = filepath.split('/')
+              ext = os.path.splitext(filepath)[1].lower()
+              return (len(parts) == 1 and parts[0] in WEB_FILES) or (parts[0] in WEB_DIRS) or (ext in WEB_EXTS)
+
+          # FIX #1: Sentinel Check Restored to prevent freezing legacy auto-generated repos
           has_custom_site = False
           if os.path.exists("index.html"):
               with open("index.html", "r", encoding="utf-8", errors="ignore") as f:
@@ -52,68 +65,47 @@ jobs:
                       has_custom_site = True
 
           if has_custom_site:
-              print(f"::notice::[CUSTOM SITE] Preserving committed site assets for {repo_name}.")
-              # SECURE: Only copy tracked Git files; skip .github/ and root README/SECURITY metadata
-              tracked = subprocess.check_output(["git", "ls-files"], text=True).splitlines()
+              print("::notice::[CUSTOM SITE] Explicit index.html detected. Packaging strict web assets.")
               for f in tracked:
-                  if f.startswith(".github/") or f in {".gitignore", "SECURITY.md"}:
+                  # Never publish CI/CD configs or raw repository metadata
+                  if f.startswith(".github/") or f in {".gitignore", "SECURITY.md", "README.md", "LICENSE"}:
                       continue
-                  dst = os.path.join("_site", f)
-                  os.makedirs(os.path.dirname(dst), exist_ok=True)
-                  shutil.copy2(f, dst)
-
-              with open(os.environ["GITHUB_OUTPUT"], "a") as gh_out:
-                  gh_out.write("is_custom=true\n")
+                  # Publish if it explicitly looks like a web asset or ends in .html
+                  if is_safe_asset(f) or f.endswith(".html"):
+                      dst = os.path.join("_site", f)
+                      os.makedirs(os.path.dirname(dst), exist_ok=True)
+                      shutil.copy2(f, dst)
 
           else:
-              print(f"::notice::[NO CUSTOM SITE] Generating static HTML from README.md for {repo_name}...")
-              content = ""
-              if os.path.exists("README.md"):
-                  with open("README.md", "r", encoding="utf-8") as f:
-                      content = f.read()
-              else:
-                  content = f"# {repo_name}\n\nAutomated documentation build."
-
+              print("::notice::[README FALLBACK] No custom index.html found. Rendering README.md.")
+              content = open("README.md", "r", encoding="utf-8").read() if os.path.exists("README.md") else f"# {repo_name}"
               body = markdown.markdown(content, extensions=["tables", "fenced_code", "toc"])
-
+              
               html = f"""<!DOCTYPE html>
-          <!-- auto-generated-from-readme -->
-          <html lang="en">
-          <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-            <title>{repo_name}</title>
-            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.8.1/github-markdown.min.css">
-            <style>
-              body {{
-                box-sizing: border-box;
-                min-width: 200px;
-                max-width: 980px;
-                margin: 0 auto;
-                padding: 45px;
-              }}
-              @media (max-width: 767px) {{
-                body {{
-                  padding: 15px;
-                }}
-              }}
-            </style>
-          </head>
-          <body class="markdown-body">
-          {body}
-          </body>
-          </html>
-          """
+              <!-- auto-generated-from-readme -->
+              <html><head><meta charset="utf-8"><title>{repo_name}</title>
+              <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.8.1/github-markdown.min.css">
+              <style>body {{ box-sizing: border-box; min-width: 200px; max-width: 980px; margin: 0 auto; padding: 45px; }}
+              @media (max-width: 767px) {{ body {{ padding: 15px; }} }}</style>
+              </head><body class="markdown-body">{body}</body></html>"""
+              
               with open("_site/index.html", "w", encoding="utf-8") as out:
                   out.write(html)
-
-              with open(os.environ["GITHUB_OUTPUT"], "a") as gh_out:
-                  gh_out.write("is_custom=false\n")
+                  
+              # FIX #2: Unified safe copy logic ensures root-level images (like ./logo.png) are copied
+              for f in tracked:
+                  if f.startswith(".github/") or f in {".gitignore", "SECURITY.md", "README.md", "LICENSE", "index.html"}:
+                      continue
+                  if is_safe_asset(f):
+                      dst = os.path.join("_site", f)
+                      os.makedirs(os.path.dirname(dst), exist_ok=True)
+                      shutil.copy2(f, dst)
+                      
+          # Prevent GitHub Pages from stripping folders starting with underscores
+          open("_site/.nojekyll", "w").close()
           EOF
 
-          touch _site/.nojekyll
-
-      # Defensive check: ensure index.html was created before attempting to upload
+      # FIX #3: Defensive validation restored
       - name: Validate build payload
         run: |
           if [ ! -f "_site/index.html" ]; then
@@ -126,42 +118,6 @@ jobs:
         with:
           path: _site
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
-
-  # Runs LAST so branch protection or push errors never block the live site deployment
-  sync-root-mirror:
-    needs: [build, deploy]
-    if: needs.build.outputs.is_custom == 'false'
-    runs-on: ubuntu-latest
-    continue-on-error: true # Non-blocking if branch protection prevents direct pushes
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: Download built site artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.1.8
-        with:
-          name: github-pages
-          path: .
-
-      - name: Extract and mirror index.html for Vercel/Cloudflare
-        run: |
-          tar -xf artifact.tar -C .
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add index.html
-
-          if ! git diff --staged --quiet; then
-            # GITHUB_TOKEN pushes do not trigger recursive runs, but [skip ci] is added for clarity
-            git commit -m "docs: sync root index.html with README [skip ci]"
-            git push
-          fi
