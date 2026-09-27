@@ -34,11 +34,9 @@ jobs:
         env:
           REPO_NAME: ${{ github.repository }}
         run: |
-          # Pinned by wheel hash for supply-chain integrity. To update: bump the
-          # version, run `pip hash` on the new downloaded wheel, and replace the hash below.
-          pip install --require-hashes --only-binary=:all: \
-            markdown==3.7 \
-            --hash=sha256:7eb6df5690b81a1d7942992c97fad2938e956e79df20cbc6186e9c3a77b1c803
+          # Pinned by wheel hash for supply-chain integrity.
+          echo "markdown==3.7 --hash=sha256:7eb6df5690b81a1d7942992c97fad2938e956e79df20cbc6186e9c3a77b1c803" > /tmp/reqs.txt
+          pip install --require-hashes --only-binary=:all: --no-deps -r /tmp/reqs.txt
           
           python3 - << 'EOF'
           import os, shutil, subprocess, markdown
@@ -47,10 +45,10 @@ jobs:
           repo_name = os.environ.get("REPO_NAME", "Site").split("/")[-1]
           tracked = subprocess.check_output(["git", "ls-files"], text=True).splitlines()
 
-          # Strict web-asset allowlist
+          # Strict web-asset allowlist (Now updated for Python Indexes and APIs)
           WEB_FILES = {"index.html", "favicon.ico", "robots.txt", "sitemap.xml", "CNAME", "404.html"}
-          WEB_DIRS = {"assets", "css", "js", "images", "img", "fonts", "static", "public", "docs", "media"}
-          WEB_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".avif", ".css", ".pdf"}
+          WEB_DIRS = {"assets", "css", "js", "images", "img", "fonts", "static", "public", "docs", "media", "simple"}
+          WEB_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".avif", ".css", ".pdf", ".json", ".whl", ".tar.gz", ".tar.bz2"}
 
           def is_safe_asset(filepath):
               parts = filepath.split('/')
