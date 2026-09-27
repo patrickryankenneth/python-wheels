@@ -1,6 +1,6 @@
 # python-wheels
 
-**Status: working - v0.1.0.** The `python-wheels` CLI (command: `pywheels`,
+**Status: working - v0.1.2.** The `python-wheels` CLI (command: `pywheels`,
 also installed as `python-wheels`) verifies and installs attested wheels
 today. First attested build shipped: `dbt-oss` for `win_arm64`.
 
@@ -33,10 +33,7 @@ can't or don't publish a wheel for your platform, for any reason.
 
 ```bash
 pip install python-wheels
-pywheels install dbt-oss==2.0.5 \
-  --repo patrickryankenneth/python-wheels-builds \
-  --tag dbt-oss-v2.0.5 \
-  --workflow build-dbt-oss-win-arm64.yml
+pywheels install dbt-oss==2.0.5
 ```
 
 1. **Checks upstream first.** If pip can already resolve real wheels for
@@ -51,7 +48,10 @@ pywheels install dbt-oss==2.0.5 \
 2. **Falls back, but verifies.** If there's no usable upstream wheel, it
    fetches the matching release from
    [python-wheels-builds](https://github.com/patrickryankenneth/python-wheels-builds)
-   and checks, before recommending anything:
+   - resolving which release and which workflow actually built it
+   automatically, via a small registry served off
+   [python-wheels.github.io](https://python-wheels.github.io) - and
+   checks, before recommending anything:
    - its **build provenance attestation** (SLSA - built by the expected CI
      workflow, from the expected repo and ref, unmodified since),
    - its **upstream-source attestation** (built from the real, tagged

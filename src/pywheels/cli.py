@@ -1,6 +1,10 @@
 """pywheels: fetch and verify a wheel from python-wheels-builds before
 anything gets near `pip install`.
 
+pywheels is an independent, unofficial project - not affiliated with,
+endorsed by, or sponsored by PyPA, PyPI, or the Python Software
+Foundation. See the "Disclaimer" section in README.md.
+
     pywheels verify dbt-core --tag dbt-oss-v2.0.5
 
     pywheels verify dbt-core --workflow smoke-test-build-dbt-oss.yml \
@@ -99,7 +103,12 @@ from .verify import (
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="pywheels")
+    parser = argparse.ArgumentParser(
+        prog="pywheels",
+        description="Verify Sigstore-attested wheels from python-wheels-builds before installing.",
+        epilog="pywheels is an independent, unofficial project - not affiliated with, "
+               "endorsed by, or sponsored by PyPA, PyPI, or the Python Software Foundation.",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     v = sub.add_parser("verify", help="verify a wheel's attestations before you trust it")

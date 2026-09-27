@@ -6,4 +6,4 @@ Independent, unofficial project - not affiliated with, endorsed by, or
 sponsored by PyPA, PyPI, or the Python Software Foundation.
 """
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
