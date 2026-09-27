@@ -1,15 +1,10 @@
-"""pywheels: fetch and verify a wheel from a python-wheels-builds release
-before anything gets near `pip install`.
+"""pywheels: fetch and verify a wheel from python-wheels-builds before
+anything gets near `pip install`.
 
-pywheels is an independent, unofficial project - not affiliated with,
-endorsed by, or sponsored by PyPA, PyPI, or the Python Software
-Foundation. See the "Disclaimer" section in README.md.
+    pywheels verify dbt-core --tag dbt-oss-v2.0.5
 
-    pywheels verify dbt-core --repo you/python-wheels-builds \
-        --tag dbt-oss-v2.0.5 --workflow build-dbt-oss-win-arm64.yml
-
-    pywheels verify dbt-core --repo you/python-wheels-builds \
-        --workflow smoke-test-build-dbt-oss.yml --local-dir ./pywheels-sample
+    pywheels verify dbt-core --workflow smoke-test-build-dbt-oss.yml \
+        --local-dir ./pywheels-sample
 
     pywheels doctor
 
@@ -19,18 +14,29 @@ first (offline, needs the optional `sigstore` extra), fall back to the
 If neither is available, verification of one of pywheels' own wheels fails
 loudly - see verify.py's VerificationError, not a silent pass-through.
 
---repo defaults to $PYWHEELS_REPO so a single-project install of this CLI
-doesn't have to pass it on every call; set that once in your shell profile,
-or keep passing --repo explicitly if you point pywheels at more than one
-release repo.
+There's no --repo flag: the repo pywheels verifies against is fixed
+(CANONICAL_REPO in registry.py) - there's only ever one, so there's
+nothing to pass or get wrong. --workflow is normally resolved for you too:
+given --tag, pywheels looks up which workflow file actually built and
+attested that specific release from registry.json, a small static file
+served off python-wheels.github.io and keyed by tag (see registry.py for
+why - short version: fetched as a plain HTTPS GET off GitHub Pages, not
+the GitHub REST API, so it isn't subject to that API's 60-requests/hour
+unauthenticated rate limit). Only pass --workflow yourself to test a
+workflow that isn't registered yet - e.g. together with --local-dir,
+where there's no tag to look it up by at all.
 
-    pywheels install dbt-core==2.0.5 --tag dbt-oss-v2.0.5 \
-        --workflow build-dbt-oss-win-arm64.yml
+    pywheels install dbt-core==2.0.5
+
+--tag/--workflow are both optional here too, resolved from the registry -
+--tag defaults to the latest attested build of the package; only pass
+either yourself to pin to a specific release or test an unregistered
+workflow.
 
 v1 `install` does NOT call `pip install` for you. It only tells you which
 `pip install ...` command is safe to run, because "safe" here specifically
 means "verified", and we can only ever verify wheels signed by our own
---repo - never an arbitrary upstream wheel. Concretely, per package:
+canonical repo - never an arbitrary upstream wheel. Concretely, per package:
   1. Can pip resolve real, non-source wheels for this package and its
      whole dependency closure on your platform? If so, say so and print
      the plain `pip install` command - unverified, since it's not ours to
@@ -46,11 +52,12 @@ means "verified", and we can only ever verify wheels signed by our own
      wheel". Nothing here inspects any dependency's own download-a-binary
      logic at import/run time (if one exists) - see the "not yet handled"
      note below.
-  2. Otherwise, fetch the matching wheel from --repo/--tag and run it
-     through verify_wheel. If it verifies, print the `pip install` command
-     for the wheel now sitting in --workdir. If verification fails or the
-     backend can't run at all, say so plainly and do NOT print an install
-     command for it.
+  2. Otherwise, fetch the matching wheel for --tag (or the registry's
+     latest attested build, if --tag wasn't given) and run it through
+     verify_wheel. If it verifies, print the `pip install` command for the
+     wheel now sitting in --workdir. If verification fails or the backend
+     can't run at all, say so plainly and do NOT print an install command
+     for it.
   3. If neither worked, print the `pip install --no-binary=:all:` command
      as the last resort, with no attestation behind it either.
 
@@ -73,7 +80,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import platform
 import subprocess
 import sys
@@ -81,7 +87,8 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from .github_release import fetch_release_assets, find_local_assets, get_latest_release_tag
+from .github_release import fetch_release_assets, find_local_assets
+from .registry import CANONICAL_REPO, RegistryError, resolve as registry_resolve, workflow_for_tag
 from .verify import (
     verify_wheel,
     VerificationError,
@@ -90,27 +97,19 @@ from .verify import (
     DEFAULT_UPSTREAM_PREDICATE_TYPE,
 )
 
-# A single-project install of this CLI is the common case, so --repo can be
-# set once via env var instead of on every call. Still overridable per-call.
-DEFAULT_REPO = os.environ.get("PYWHEELS_REPO")
-
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="pywheels",
-        description="Verify Sigstore-attested wheels from python-wheels-builds before installing.",
-        epilog="pywheels is an independent, unofficial project - not affiliated with, "
-               "endorsed by, or sponsored by PyPA, PyPI, or the Python Software Foundation.",
-    )
+    parser = argparse.ArgumentParser(prog="pywheels")
     sub = parser.add_subparsers(dest="command", required=True)
 
     v = sub.add_parser("verify", help="verify a wheel's attestations before you trust it")
     v.add_argument("package", help="package name, e.g. dbt-core")
-    v.add_argument("--repo", required=DEFAULT_REPO is None, default=DEFAULT_REPO,
-                    help="owner/repo of the release, e.g. you/python-wheels-builds "
-                         "(default: $PYWHEELS_REPO if set)")
     v.add_argument("--tag", help="release tag, e.g. dbt-oss-v2.0.5 (ignored with --local-dir)")
-    v.add_argument("--workflow", required=True, help="workflow filename that signed it, e.g. build-dbt-oss-win-arm64.yml")
+    v.add_argument("--workflow", default=None,
+                    help="workflow filename that signed it, e.g. build-dbt-oss-win-arm64.yml. "
+                         "Normally looked up automatically from the registry for --tag; only "
+                         "pass this yourself to test a workflow that isn't registered yet "
+                         "(e.g. together with --local-dir)")
     v.add_argument("--ref", default="refs/heads/main", help="git ref the signing workflow ran from (default: %(default)s)")
     v.add_argument("--upstream-predicate-type", default=DEFAULT_UPSTREAM_PREDICATE_TYPE,
                     help="predicate type URL for the upstream-source attestation (default: %(default)s)")
@@ -128,15 +127,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     i = sub.add_parser("install", help="print the safe pip install command for a package: verified ours, or plain upstream, or source")
     i.add_argument("package", help="package name, optionally pinned, e.g. dbt-core or dbt-core==2.0.5")
-    i.add_argument("--repo", required=DEFAULT_REPO is None, default=DEFAULT_REPO,
-                    help="owner/repo to check if upstream has no usable wheel "
-                         "(default: $PYWHEELS_REPO if set)")
-    i.add_argument("--workflow", required=True, help="workflow filename that signs our wheels, e.g. build-dbt-oss-win-arm64.yml")
+    i.add_argument("--workflow", default=None,
+                    help="workflow filename that signed the build, e.g. build-dbt-oss-win-arm64.yml. "
+                         "Normally resolved automatically from the registry - only pass this to "
+                         "test an unregistered workflow yourself")
     i.add_argument("--tag", default=None,
-                    help="release tag to use from --repo (default: that repo's latest release). "
-                         "Required if your tag naming doesn't match '<package>-v<version>' - "
-                         "e.g. dbt-core==2.0.5 needs --tag dbt-oss-v2.0.5 explicitly, since the "
-                         "release-tag prefix ('dbt-oss') and the pip package name ('dbt-core') differ.")
+                    help="exact release tag to use (default: resolved automatically from the "
+                         "registry - latest attested build of this package, or the exact one "
+                         "matching a pinned version like dbt-core==2.0.5)")
     i.add_argument("--ref", default="refs/heads/main", help="git ref the signing workflow ran from (default: %(default)s)")
     i.add_argument("--upstream-predicate-type", default=DEFAULT_UPSTREAM_PREDICATE_TYPE,
                     help="predicate type URL for the upstream-source attestation (default: %(default)s)")
@@ -156,19 +154,34 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         print("error: pass either --tag (to fetch a release) or --local-dir (to use files on disk)", file=sys.stderr)
         return 2
 
+    workflow = args.workflow
+    if workflow is None:
+        if args.tag is None:
+            print(
+                "error: --workflow is required with --local-dir, since there's no tag to "
+                "look it up by (a tag not yet registered has nothing to look up)",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            workflow = workflow_for_tag(args.tag)
+        except RegistryError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
     try:
         if args.local_dir is not None:
             assets = find_local_assets(args.package, args.local_dir)
         else:
             dest = Path(args.workdir)
             dest.mkdir(parents=True, exist_ok=True)
-            assets = fetch_release_assets(args.repo, args.tag, args.package, dest)
+            assets = fetch_release_assets(CANONICAL_REPO, args.tag, args.package, dest)
 
         report = verify_wheel(
             assets.wheel,
             assets.bundle,
-            repo=args.repo,
-            workflow_file=args.workflow,
+            repo=CANONICAL_REPO,
+            workflow_file=workflow,
             ref=args.ref,
             upstream_predicate_type=args.upstream_predicate_type,
             source_archive_path=assets.archive,
@@ -280,7 +293,7 @@ def _cmd_install(args: argparse.Namespace) -> int:
     print(f"pywheels install {spec}: checking whether pip can resolve real wheels for your platform...")
     if _upstream_available(spec, package, args.index_url):
         print(f"\nupstream has wheels for {spec} and its dependencies on this platform.")
-        print("this is NOT attested by us - we only ever verify wheels from our own --repo. safe to run:\n")
+        print("this is NOT attested by us - we only ever verify wheels from our own canonical repo. safe to run:\n")
         cmd = ["pip", "install", spec]
         if args.index_url:
             cmd += ["--index-url", args.index_url]
@@ -288,24 +301,36 @@ def _cmd_install(args: argparse.Namespace) -> int:
         return 0
 
     print(f"\npip could not resolve real wheels for {spec} and its dependencies on this platform.")
-    print(f"checking {args.repo} for an attested build...")
+    print(f"checking {CANONICAL_REPO} for an attested build...")
 
-    if not args.tag and version:
-        print(
-            f"\ncan't guess a release tag from the version pin ({version}) - this repo's tag "
-            f"prefixes don't necessarily match the pip package name (e.g. tag 'dbt-oss-v2.0.5' "
-            f"for package 'dbt-core'). Pass --tag explicitly.",
-            file=sys.stderr,
-        )
-        return 2
+    workflow = args.workflow
+    if args.tag and workflow is None:
+        try:
+            workflow = workflow_for_tag(args.tag)
+        except RegistryError as exc:
+            print(f"{exc}", file=sys.stderr)
+            return 2
+    elif not args.tag:
+        try:
+            tag, resolved_workflow = registry_resolve(package, version)
+        except RegistryError as exc:
+            print(f"{exc}")
+            print("nothing we can vouch for. building from source, unverified, is your only option:\n")
+            _print_pip_cmd("pip", "install", "--no-binary=:all:", spec)
+            return 1
+        args.tag = tag
+        if workflow is None:
+            workflow = resolved_workflow
+        if not version:
+            print(f"no version pinned - using latest attested build: {tag}")
 
     try:
-        tag = args.tag or get_latest_release_tag(args.repo)
+        tag = args.tag
         dest = Path(args.workdir)
         dest.mkdir(parents=True, exist_ok=True)
-        assets = fetch_release_assets(args.repo, tag, package, dest)
+        assets = fetch_release_assets(CANONICAL_REPO, tag, package, dest)
     except FileNotFoundError as exc:
-        print(f"{args.repo}: no wheel available either ({exc})")
+        print(f"{CANONICAL_REPO}: no wheel available either ({exc})")
         print("nothing we can vouch for. building from source, unverified, is your only option:\n")
         _print_pip_cmd("pip", "install", "--no-binary=:all:", spec)
         return 1
@@ -314,8 +339,8 @@ def _cmd_install(args: argparse.Namespace) -> int:
         report = verify_wheel(
             assets.wheel,
             assets.bundle,
-            repo=args.repo,
-            workflow_file=args.workflow,
+            repo=CANONICAL_REPO,
+            workflow_file=workflow,
             ref=args.ref,
             upstream_predicate_type=args.upstream_predicate_type,
             source_archive_path=assets.archive,
