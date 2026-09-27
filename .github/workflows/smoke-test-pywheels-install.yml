@@ -12,7 +12,6 @@ jobs:
   install-on-win-arm64:
     runs-on: windows-11-arm
     env:
-      PYWHEELS_REPO: patrickryankenneth/python-wheels-builds
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
@@ -36,17 +35,16 @@ jobs:
           $env:PROCESSOR_ARCHITECTURE
           python -c "import platform; print(platform.machine(), platform.architecture())"
 
-      - name: Install pywheels from source (with sigstore extra)
+      - name: Install pywheels from source (gh backend, no sigstore)
         shell: pwsh
-        # The sigstore extra makes `doctor`/`verify_wheel`'s "auto" backend
-        # selection prefer sigstore over gh (see verify.py: sigstore_available()
-        # is checked first). sigstore verifies fully offline against the
-        # bundle file github_release.py already downloaded via plain
-        # urllib, so it never calls `gh attestation download` at all - it
-        # sidesteps whatever is failing there entirely, whatever the actual
-        # cause turns out to be (see verify.py's archive_check_error, which
-        # now surfaces that cause instead of swallowing it, for if/when the
-        # gh backend needs debugging directly).
+        # sigstore is intentionally NOT installed here: its cryptography
+        # dependency has no prebuilt wheel for windows-arm64, so pip falls
+        # back to building it from source (Rust + a C toolchain), which
+        # fails on this runner. So `doctor`/`verify_wheel`'s "auto" backend
+        # selection falls through to `gh` instead (see verify.py:
+        # sigstore_available() returns False, so gh_available() is tried
+        # next) - this job exercises the `gh attestation verify`/`download`
+        # path specifically, not sigstore's offline bundle verification.
         run: pip install -e "."
 
       - name: Check backend availability
@@ -57,8 +55,6 @@ jobs:
         shell: pwsh
         run: |
           pywheels install dbt-oss==2.0.5 `
-            --tag dbt-oss-v2.0.5 `
-            --workflow build-dbt-oss-win-arm64.yml `
             -v | Tee-Object -FilePath install-output.txt
 
       - name: Assert the override actually detected the win-arm64 gap
