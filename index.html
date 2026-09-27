@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<!-- auto-generated-from-readme -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>patrickryankenneth/python-wheels</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.8.1/github-markdown.min.css">
+  <style>
+    body {
+      box-sizing: border-box;
+      min-width: 200px;
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 45px;
+    }
+    @media (max-width: 767px) {
+      body {
+        padding: 15px;
+      }
+    }
+  </style>
+</head>
+<body class="markdown-body">
+<h1 id="python-wheels">python-wheels</h1>
+<p><strong>Status: working - v0.1.2.</strong> The <code>python-wheels</code> CLI (command: <code>pywheels</code>,
+also installed as <code>python-wheels</code>) verifies and installs attested wheels
+today. First attested build shipped: <code>dbt-oss</code> for <code>win_arm64</code>.</p>
+<blockquote>
+<p><strong>Disclaimer:</strong> <code>python-wheels</code> is an independent, unofficial project. It
+is <strong>not affiliated with, endorsed by, or sponsored by</strong> the Python
+Packaging Authority (PyPA), the Python Software Foundation, or PyPI.
+"PyPI," "Python," and the Python logo are trademarks of the PSF; this
+project is a third-party tool that builds on top of the public PyPI
+index, <code>pip</code>, and standard packaging specs (PEP 427, PEP 503) - it does
+not host, mirror, or modify PyPI itself, and the <code>python-wheels-builds</code>
+and <code>python-wheels.github.io</code> repos referenced below are this project's
+own infrastructure, not official Python infrastructure.</p>
+</blockquote>
+<h2 id="the-problem">The problem</h2>
+<p>Some Python packages don't ship a wheel for your platform: an
+uncommon architecture, Alpine/musl instead of glibc, an OS upstream doesn't
+target, or just a combination nobody's gotten around to building for. Right
+now the options are "build it from source yourself, every time" or "hope
+someone in the community hosts one somewhere."</p>
+<p>It's also not always upstream being lazy. PyPI caps a project at 10GB of
+total storage, and wheels for every platform/arch/Python-version
+combination add up fast - that's part of why projects like PyTorch host
+some of their wheels off-PyPI and point people at an extra index instead.
+<code>python-wheels</code> is aimed at exactly that situation: popular packages that
+can't or don't publish a wheel for your platform, for any reason.</p>
+<h2 id="what-it-does">What it does</h2>
+<pre><code class="language-bash">pip install python-wheels
+pywheels install dbt-oss==2.0.5
+</code></pre>
+<ol>
+<li><strong>Checks upstream first.</strong> If pip can already resolve real wheels for
+   the package - and its whole dependency closure, not just the top-level
+   package - on your platform, it says so and prints the plain
+   <code>pip install</code> command; this tool gets out of the way whenever upstream
+   already has you covered. A small per-package override list
+   (<code>overrides.json</code>) handles the rare case where a package's real wheel
+   availability is hidden from pip's normal resolution - e.g. <code>dbt-oss</code>,
+   whose PyPI sdist is a stub build backend that fetches a real prebuilt
+   wheel from GitHub, keyed by platform, with no source to fall back to.</li>
+<li><strong>Falls back, but verifies.</strong> If there's no usable upstream wheel, it
+   fetches the matching release from
+   <a href="https://github.com/patrickryankenneth/python-wheels-builds">python-wheels-builds</a></li>
+<li>resolving which release and which workflow actually built it
+   automatically, via a small registry served off
+   <a href="https://python-wheels.github.io">python-wheels.github.io</a> - and
+   checks, before recommending anything:</li>
+<li>its <strong>build provenance attestation</strong> (SLSA - built by the expected CI
+     workflow, from the expected repo and ref, unmodified since),</li>
+<li>its <strong>upstream-source attestation</strong> (built from the real, tagged
+     upstream release - not a fork or a patched copy),</li>
+<li>the <strong>source archive's digest</strong> against what that attestation
+     recorded, when a source archive is available.</li>
+</ol>
+<p>Verification runs offline via <a href="https://pypi.org/project/sigstore/">sigstore</a>
+   (<code>pip install python-wheels[sigstore]</code>) if it's installed, or falls back
+   to the <code>gh</code> CLI (no pip dependency, needs network) if it isn't. Run
+   <code>pywheels doctor</code> to see which backend is usable on your machine.
+3. <strong>Fails loudly, not silently.</strong> <code>pywheels install</code> never runs
+   <code>pip install</code> for you - it only ever prints the exact command that's
+   safe to run. If verification fails, or neither backend is available at
+   all, it says so plainly and falls back to <code>pip install
+   --no-binary=:all:</code> (unverified, from source) as the last resort - never
+   a silent, unattested install.</p>
+<p><code>pywheels verify</code> runs the same verification directly against a wheel
+that's already on disk, or a specific release tag - useful for checking a
+build without going through the whole <code>install</code> flow.</p>
+<h2 id="where-the-wheels-actually-come-from">Where the wheels actually come from</h2>
+<p>This repo is only the installer and verifier. The wheels themselves are
+built and attested in
+<a href="https://github.com/patrickryankenneth/python-wheels-builds">python-wheels-builds</a>,
+and also served as a plain <a href="https://peps.python.org/pep-0503/">PEP 503</a>
+index at <a href="https://python-wheels.github.io">python-wheels.github.io</a> for
+anyone who just wants <code>pip install --extra-index-url
+https://python-wheels.github.io/simple/ &lt;package&gt;</code> without the
+verification step. <code>pywheels</code> is the piece that ties the CLI, the
+release repo, and the attestation checks together so you don't have to run
+<code>gh attestation verify</code> by hand.</p>
+<h2 id="longer-term-direction">Longer-term direction</h2>
+<p>The build side is currently one hand-tuned workflow for one package
+(<code>dbt-oss</code>/<code>dbt-core</code> on Windows ARM64). The goal is to turn that into a
+standardized, reproducible build recipe that can target other popular PyPI
+packages missing wheels for a given platform - starting with the platforms
+that come up most often (Alpine/musl, less-common architectures, newer
+Python versions upstream hasn't built for yet), rather than trying to
+cover everything at once.</p>
+<h2 id="not-yet-decided">Not yet decided</h2>
+<ul>
+<li>CLI surface beyond <code>install</code>/<code>verify</code>/<code>doctor</code> (list available
+  platforms? show why a package fell back? a way to request a new
+  package/platform combo?)</li>
+<li>How package/platform requests get prioritized once this covers more than
+  one package</li>
+<li>Whether to eventually provide a wrapper mode that invokes pip directly after verification, 
+  versus keeping the strict "print the safe command only" separation.</li>
+</ul>
+<p>Contributions and issues on any of the above are welcome - this project is
+still early, even with a first attested build shipped.</p>
+</body>
+</html>
