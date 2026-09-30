@@ -8,6 +8,9 @@ on:
       - 'pywheels/**'
       - 'src/pywheels/**'
 
+permissions:
+  contents: read
+
 jobs:
   install-on-win-arm64:
     runs-on: windows-11-arm
