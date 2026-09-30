@@ -1,8 +1,8 @@
 # python-wheels
 
-**Status: working - v0.1.2.** The `python-wheels` CLI (command: `pywheels`,
+**Status: working - v0.2.0.** The `python-wheels` CLI (command: `pywheels`,
 also installed as `python-wheels`) verifies and installs attested wheels
-today. First attested build shipped: `dbt-oss` for `win_arm64`.
+today. Run `pywheels list` to see which wheels are available.
 
 > **Disclaimer:** `python-wheels` is an independent, unofficial project. It
 > is **not affiliated with, endorsed by, or sponsored by** the Python
@@ -63,16 +63,40 @@ pywheels install dbt-oss==2.0.5
    (`pip install python-wheels[sigstore]`) if it's installed, or falls back
    to the `gh` CLI (no pip dependency, needs network) if it isn't. Run
    `pywheels doctor` to see which backend is usable on your machine.
-3. **Fails loudly, not silently.** `pywheels install` never runs
-   `pip install` for you - it only ever prints the exact command that's
-   safe to run. If verification fails, or neither backend is available at
-   all, it says so plainly and falls back to `pip install
-   --no-binary=:all:` (unverified, from source) as the last resort - never
-   a silent, unattested install.
+3. **Installs only what it verified.** `pywheels install` installs exactly the
+   verified wheel file (`pip install --no-deps <wheel>`), then shows you its
+   dependencies and asks how to resolve them - those are never verified. If
+   verification fails, or neither backend is available, it refuses to install
+   and only *prints* the unverified `pip install --no-binary=:all:` command as
+   your remaining option; it never runs it for you. Use `--print-only` to see
+   every command without running any.
 
-`pywheels verify` runs the same verification directly against a wheel
-that's already on disk, or a specific release tag - useful for checking a
-build without going through the whole `install` flow.
+`pywheels verify` runs the verification without installing, and prints a
+receipt of what was checked, what was not, and how to re-check it yourself.
+
+| command | what it does |
+| --- | --- |
+| `pywheels verify <pkg>` | verify the attested wheel for this machine |
+| `pywheels install <pkg>` | verify, then install exactly that wheel |
+| `pywheels list [pkg]` | every attested wheel, per version and platform |
+| `pywheels policy` | policy labels in the registry, and which parts pywheels checks |
+| `pywheels doctor` | which verification backends work here |
+
+## What is and isn't verified
+
+Verified: the exact wheel you install - its build provenance and that it was
+built from an unmodified upstream commit. **Not** verified: its dependencies,
+and the safety of the upstream code. See [SECURITY.md](SECURITY.md) for the
+full trust model and the known limitations.
+
+**Policies.** Each wheel carries a policy label naming the promises the builds
+repo makes about how it was built. pywheels does not restate those promises;
+`pywheels policy` shows the labels and which of them it independently checks
+(today: that every action in the signing workflow is pinned to a full commit
+SHA). As of v0.2.0 policy documents are not yet hashed into the attestations,
+and the current wheels were built before their policy was written down and
+frozen, so their label is a name only. Wheels built after a policy is
+published are intended to carry its hash.
 
 ## Where the wheels actually come from
 
@@ -99,13 +123,12 @@ cover everything at once.
 
 ## Not yet decided
 
-- CLI surface beyond `install`/`verify`/`doctor` (list available
-  platforms? show why a package fell back? a way to request a new
-  package/platform combo?)
+- CLI surface beyond `install`/`verify`/`list`/`policy`/`doctor` (`--json`
+  output? a way to request a new package/platform combo?)
 - How package/platform requests get prioritized once this covers more than
   one package
-- Whether to eventually provide a wrapper mode that invokes pip directly after verification, 
-  versus keeping the strict "print the safe command only" separation.
+- Policy documents bound into the attestations by hash, and pinning the
+  signer by immutable repository ID.
 
 Contributions and issues on any of the above are welcome - this project is
 still early, even with a first attested build shipped.

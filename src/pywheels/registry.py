@@ -134,6 +134,9 @@ def _asset_from_entry(builds_repo: str, tag: str, revision: int, filename: str, 
     try:
         prov = e["provenance"]
         up = e["upstream"]
+        # A version PEP 440 can't parse would otherwise sort as 0 and silently
+        # never be selected (e.g. "2.0.5.post1.post1" is not a valid version).
+        Version(e["version"])
         return Asset(
             builds_repo=builds_repo,
             tag=tag,
@@ -151,7 +154,7 @@ def _asset_from_entry(builds_repo: str, tag: str, revision: int, filename: str, 
             upstream_tag=up["tag"],
             upstream_commit=up["commit"],
         )
-    except (KeyError, TypeError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError, InvalidVersion) as exc:
         raise RegistryError(f"registry entry {tag}/{filename} is malformed (missing or invalid field: {exc})") from exc
 
 

@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import argparse
 import email
+import hashlib
 import json
 import os
 import platform
@@ -107,6 +108,7 @@ from .verify import (
     verify_wheel,
     workflow_path,
 )
+from .policies import POLICY_NOTICE, WORKFLOW_ACTION_PINS, checks_for, describe
 from .release_trust import ReleaseTrust, Signature, collect_release_trust
 
 HELP_SCOPE = (
@@ -194,6 +196,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     ls = sub.add_parser("list", help="show every attested wheel in the registry, per version and platform")
     ls.add_argument("package", nargs="?", default=None, help="limit to one package")
+
+    sub.add_parser("policy", help="show which policy labels the registry uses and which of their promises "
+                                  "this pywheels actually checks")
 
     sub.add_parser("doctor", help="check which verification backends are usable, and how to fix the ones that aren't")
     return parser
@@ -326,6 +331,65 @@ def _print_transparency(f: dict, rt: Optional[ReleaseTrust]) -> None:
         _bullet(f"unchecked: {n}")
 
 
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _wheel_sboms(wheel: Path) -> List[str]:
+    """SBOM-looking files inside the wheel, found by NAME only (zip index
+    read, nothing extracted or parsed). Says nothing about their content."""
+    try:
+        with zipfile.ZipFile(wheel) as z:
+            names = z.namelist()
+    except (OSError, zipfile.BadZipFile):
+        return []
+    hits = []
+    for n in names:
+        low = n.lower()
+        base = low.rsplit("/", 1)[-1]
+        if ".dist-info/sboms/" in low or base.endswith((".cdx.json", ".spdx.json", ".cdx.xml", ".spdx")) or "sbom" in base:
+            hits.append(n)
+    return hits
+
+
+def _kv(label: str, value: str, *, indent: int = 4, col: int = 18) -> None:
+    """Unwrapped `label   value` row, for URLs and commands that must stay copy-pasteable."""
+    print(" " * indent + label.ljust(col - indent) + value)
+
+
+def _print_recheck(asset: Asset, report, args) -> None:
+    """Where each claim above can be checked by hand. Built only from values
+    already shown (file names, URLs, commands) - nothing here is a new claim."""
+    f = report.facts
+    repo = asset.builds_repo
+    wheel = Path(report.wheel)
+    base = f"https://github.com/{repo}"
+    signer = f"{repo}/{workflow_path(args.workflow or asset.signer_workflow)}"
+    print("\n  check it yourself, without pywheels")
+    try:
+        _kv("sha256", _sha256_file(wheel))
+        _kv("", "of the file that was verified; the release page lists the same value beside the asset")
+    except OSError:
+        pass
+    _kv("release", f"{base}/releases/tag/{asset.tag}")
+    _kv("attestations", f"{base}/releases/download/{asset.tag}/{wheel.name}.attestations.jsonl")
+    if f.get("invocation"):
+        _kv("build run", f["invocation"])
+    if f.get("build_commit"):
+        _kv("build commit", f"{base}/commit/{f['build_commit']}")
+    if f.get("rekor_log_index") is not None:
+        _kv("log entry", f"https://search.sigstore.dev/?logIndex={f['rekor_log_index']}")
+    print("    commands")
+    q = shlex.quote
+    print(f"      gh attestation verify {q(str(wheel))} --repo {repo} --signer-workflow {signer}")
+    print(f"      gh release verify-asset {asset.tag} {q(str(wheel))} --repo {repo}")
+    print(f"      sha256sum {q(str(wheel))}")
+
+
 def _print_receipt(asset: Asset, report, args) -> None:
     """Plain-English summary of what was checked. Every line is derived from
     the report - nothing here is printed unless the code actually checked it,
@@ -359,7 +423,7 @@ def _print_receipt(asset: Asset, report, args) -> None:
     if report.pin_audit:
         n, _bad, path, commit = report.pin_audit
         _row("", f"all {n} action refs in {path.rsplit('/', 1)[-1]} @ {commit[:12]} are pinned to full commit SHAs")
-    elif "sha-pinned" in asset.policy_version:
+    elif WORKFLOW_ACTION_PINS in checks_for(asset.policy_version):
         _row("", "workflow pinning NOT confirmed by pywheels (audit skipped or unavailable)")
     else:
         _row("", "this pywheels can't check what that policy requires")
@@ -380,13 +444,32 @@ def _print_receipt(asset: Asset, report, args) -> None:
         size = f" ({report.archive_bytes / 1e6:,.1f} MB)" if report.archive_bytes else ""
         _bullet(f"source archive{size} matches the digest recorded in the attestation")
     elif not report.archive_checked:
-        _bullet("source archive NOT checked (--no-source-archive)")
+        _bullet("source archive NOT checked (--no-source-archive): 'unmodified upstream source' "
+                "rests on the builder's signed statement, not on anything pywheels re-derived")
     for n in report.notes:
         _bullet(f"unchecked: {n}")
     _print_transparency(f, getattr(report, "release_trust", None))
+
+    sboms = _wheel_sboms(report.wheel)
+    if sboms:
+        print("\n  shipped inside the wheel (covered by the same attested digest)")
+        shown = ", ".join(sboms[:3]) + (f" (+{len(sboms) - 3} more)" if len(sboms) > 3 else "")
+        _bullet(f"{len(sboms)} SBOM-like file(s), found by file name only: {shown}")
+        _bullet("these come from the upstream project - pywheels did not produce them and does not "
+                "check or vouch for their contents")
+
     print("\n  trust boundary")
-    _row("trusted", "builder repo and GitHub Actions", indent=4, col=18)
-    _row("not covered", "wheel dependencies and upstream-code safety", indent=4, col=18)
+    _row("trusted", "the builder repo owner, GitHub (Actions, releases) and Sigstore (Fulcio, Rekor)", indent=4, col=18)
+    not_covered = ["wheel dependencies", "safety of the upstream code"]
+    if WORKFLOW_ACTION_PINS in checks_for(asset.policy_version):
+        not_covered.append("the build container image and anything the build downloads "
+                           "(pywheels' pinning check looks at workflow action refs only)")
+    if not report.archive_checked:
+        not_covered.append("that the source is unmodified upstream (archive check skipped)")
+    for i, item in enumerate(not_covered):
+        _row("not covered" if i == 0 else "", item, indent=4, col=18)
+
+    _print_recheck(asset, report, args)
 
 
 def _select(args, registry: Registry, name: str, spec: SpecifierSet):
@@ -422,7 +505,7 @@ def _fetch_and_verify(args, asset: Asset):
             "upstream_commit": asset.upstream_commit,
             "snapshot_archive_name": asset.archive_name if not args.no_source_archive else None,
         },
-        audit_pins="sha-pinned" in asset.policy_version and not args.skip_workflow_audit,
+        audit_pins=WORKFLOW_ACTION_PINS in checks_for(asset.policy_version) and not args.skip_workflow_audit,
     )
     return report, assets
 
@@ -788,6 +871,33 @@ _GH_INSTALL_HINTS = {
 }
 
 
+def _cmd_policy(_args: argparse.Namespace) -> int:
+    try:
+        registry = load_registry()
+    except RegistryError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if registry.schema < 2:
+        print("error: the registry is schema 1 and carries no policy labels", file=sys.stderr)
+        return 2
+    counts: dict = {}
+    for a in registry.assets:
+        counts[a.policy_version] = counts.get(a.policy_version, 0) + 1
+    print("policy labels in the registry, and what pywheels independently checks for each\n")
+    for version in sorted(counts, reverse=True):
+        print(f"  {version}   ({counts[version]} wheel(s))")
+        checks = sorted(checks_for(version))
+        if checks:
+            for c in checks:
+                print(f"      checked: {describe(c)}")
+        else:
+            print("      checked: nothing beyond the label matching the registry and the attestation")
+    print("\nThe builder's promises for each policy are defined by the builds repo and are not restated here.")
+    print("Anything not listed as independently checked is a builder assertion and is not verified by pywheels.")
+    print("\n" + POLICY_NOTICE)
+    return 0
+
+
 def _cmd_doctor(_args: argparse.Namespace) -> int:
     print("pywheels doctor")
     print("-" * 44)
@@ -848,7 +958,7 @@ def main(argv=None) -> None:
     sys.stderr.reconfigure(line_buffering=True)
 
     args = _build_parser().parse_args(argv)
-    handler = {"verify": _cmd_verify, "install": _cmd_install, "list": _cmd_list, "doctor": _cmd_doctor}[args.command]
+    handler = {"verify": _cmd_verify, "install": _cmd_install, "list": _cmd_list, "policy": _cmd_policy, "doctor": _cmd_doctor}[args.command]
     sys.exit(handler(args))
 
 
