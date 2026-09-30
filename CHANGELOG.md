@@ -46,7 +46,7 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Security notes
 
-- Known limitations are listed in [SECURITY.md](SECURITY.md), including that the signer
+- Known limitations are listed in [SECURITY.md](https://github.com/patrickryankenneth/python-wheels/blob/main/SECURITY.md), including that the signer
   is pinned by repository name rather than immutable repository ID.
 
 ## [0.1.2] - 2026-09-26
