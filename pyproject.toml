@@ -21,11 +21,24 @@ classifiers = [
   "Topic :: Security",
   "Topic :: System :: Software Distribution",
 ]
-# No required deps, and none planned - the whole design is "verify with
-# whatever's already there" (sigstore if installed, else the `gh` binary,
-# which isn't a pip dependency at all). Nothing here needs a transitive
-# dependency pinned either, for the same reason.
-dependencies = []
+# One required dependency: `packaging` (PyPA), for PEP 440 versions, PEP 508
+# requirements/markers and wheel-tag matching in the registry code. That is
+# fiddly, spec-driven logic with a long history of edge cases, so it isn't
+# reimplemented here. Everything else is the standard library.
+#
+# It is NOT part of the attestation check: verify.py imports nothing outside
+# the standard library, and verification still works with "whatever's already
+# there" (sigstore if installed, else the `gh` binary, which isn't a pip
+# dependency at all). A bug in `packaging` could pick a different attested
+# wheel or mis-list dependencies; it can't make an unattested wheel verify.
+#
+# Floor 22.0: the first release with no dependencies of its own (earlier ones
+# pull in pyparsing); the test suite passes on 22.0 through 26.3. No upper
+# bound on purpose: packaging is calendar-versioned (26.x = 2026), so a cap
+# like <27 would start causing resolver conflicts in January 2027.
+# tests/test_dependencies_declared.py fails if the code imports anything
+# that isn't listed here.
+dependencies = ["packaging>=22.0"]
 
 # sigstore is optional: pywheels falls back to the `gh` CLI (a system
 # binary, not a pip dependency) if it's absent, and fails closed - refuses

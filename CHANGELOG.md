@@ -8,7 +8,7 @@ and this project uses [Semantic Versioning](https://semver.org/).
 ## [0.2.0] - 2026-09-29
 
 ### Added
-
+  
 - **Registry schema 2.** Wheels are resolved by name, version and platform across
   *all* releases, using pip's own tag ranking, instead of by release tag. A newer
   `.postN` rebuild that only covers some platforms no longer hides the others, and
@@ -39,6 +39,7 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Adds one runtime dependency, `packaging>=22.0`, for version, requirement and platform-tag handling.
 - The pinned-workflow check is now looked up through one table (`policies.py`) instead of
   string matching on the policy label in several places.
 - A registry entry whose version is not valid PEP 440 is now a hard error naming the
