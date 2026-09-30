@@ -26,8 +26,30 @@ For a given wheel, a successful verification means:
   3. If a source archive is supplied, it hashes to the digest recorded in
      the upstream-source predicate (snapshot_archive_sha256).
 
+  4. If the caller passes what the registry claims (expected_policy_version,
+     required_predicate_types), the wheel's OWN attestations must agree. The
+     registry is a hint, never the authority: a disagreement fails, it is
+     not "corrected" in the registry's favour.
+
+  5. What the signed attestations SAY is cross-checked against the registry
+     (upstream repo/tag/commit, source archive name) and against the signer
+     we pinned (workflow repository and path inside the SLSA provenance), and
+     the upstream-source predicate must assert tree_clean. When the policy
+     label is `...sha-pinned...`, the signing workflow file is fetched at the
+     exact builds-repo commit recorded in the provenance and every `uses:`
+     must be pinned to a full commit SHA - so that label is checked, not
+     trusted. A workflow that ISN'T covered by a check is reported as
+     unchecked, never silently counted as passing.
+
 Attestation types we didn't ask for (IGNORED_PREDICATE_TYPES) are recorded
-but never attempted or counted - see release/v0.2 below.
+but never attempted or counted - see release/v0.2 below. (GitHub's release
+attestation is looked at separately, and only as information, by
+release_trust.py - it never changes the verdict here.)
+
+The Rekor transparency-log entry inside each verified bundle (log index and
+integration time) is recorded on the AttestationResult and surfaced as
+facts["rekor_log_index"] / ["rekor_integrated_time"]. It is read from the
+same bundle the backend just verified; no extra network call is made.
 """
 
 from __future__ import annotations
@@ -36,10 +58,12 @@ import base64
 import hashlib
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -79,6 +103,9 @@ class AttestationResult:
     verified: bool
     detail: str
     ignored: bool = False
+    # {"log_index": int, "integrated_time": Optional[int], ...} from the
+    # bundle's Rekor tlog entry, or None if the bundle carries none.
+    tlog: Optional[dict] = None
 
 
 @dataclass
@@ -95,6 +122,27 @@ class VerifyReport:
     # actionable message instead of a bare "FAILED" that looks identical to
     # a real hash mismatch.
     archive_check_error: Optional[str] = None
+    # Registry cross-checks. required_predicate_types: every one must be
+    # present and verified. policy_ok: None = nothing to compare against
+    # (registry made no claim, or the predicate content wasn't retrieved -
+    # see policy_note), True/False = compared. Only False blocks.
+    required_predicate_types: tuple = ()
+    expected_policy_version: Optional[str] = None
+    found_policy_versions: tuple = ()
+    policy_ok: Optional[bool] = None
+    policy_note: Optional[str] = None
+    # Decoded from the VERIFIED predicates (empty for anything unverified).
+    facts: dict = field(default_factory=dict)
+    mismatches: list = field(default_factory=list)  # attestation disagrees with registry/pin -> fails
+    notes: list = field(default_factory=list)       # could not be compared -> shown, doesn't fail
+    pin_audit: Optional[tuple] = None                # (n `uses:` checked, unpinned refs, workflow path, commit)
+    archive_bytes: Optional[int] = None
+    # Backends that independently re-verified the wheel in `auto` mode
+    # (besides `backend`). Empty = single backend only - shown in the receipt.
+    cross_checked_by: list = field(default_factory=list)
+    # release_trust.ReleaseTrust, attached by the CLI after a successful
+    # verification. Informational only - never part of `ok`.
+    release_trust: Optional[object] = None
 
     @property
     def ok(self) -> bool:
@@ -107,15 +155,152 @@ class VerifyReport:
             for a in checked
         )
         archive_ok = self.archive_ok is not False  # not checked -> doesn't block
-        return has_build_provenance and has_upstream_source and archive_ok
+        required_ok = all(
+            any(a.verified and a.predicate_type == t for a in checked) for t in self.required_predicate_types
+        )
+        policy_ok = self.policy_ok is not False
+        return (has_build_provenance and has_upstream_source and archive_ok and required_ok
+                and policy_ok and not self.mismatches)
+
+
+def _workflow_path(workflow: str) -> str:
+    """Accept either a bare filename (registry v1, --workflow:
+    'build-x.yml') or the path registry v2 records ('.github/workflows/build-x.yml')."""
+    return workflow if "/" in workflow else f".github/workflows/{workflow}"
 
 
 def _signer_identity(repo: str, workflow_file: str, ref: str) -> str:
-    return f"https://github.com/{repo}/.github/workflows/{workflow_file}@{ref}"
+    return f"https://github.com/{repo}/{_workflow_path(workflow_file)}@{ref}"
 
 
 def _signer_workflow(repo: str, workflow_file: str) -> str:
-    return f"{repo}/.github/workflows/{workflow_file}"
+    return f"{repo}/{_workflow_path(workflow_file)}"
+
+
+def _find_values(obj, key: str):
+    """Every value stored under `key` anywhere inside a decoded predicate."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == key:
+                yield v
+            yield from _find_values(v, key)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _find_values(item, key)
+
+
+workflow_path = _workflow_path  # public name for cli.py
+
+
+def _dig(obj, *keys):
+    for k in keys:
+        if isinstance(obj, dict):
+            obj = obj.get(k)
+        elif isinstance(obj, list) and isinstance(k, int) and k < len(obj):
+            obj = obj[k]
+        else:
+            return None
+    return obj
+
+
+def _collect_facts(report: "VerifyReport") -> dict:
+    """Pull the fields we care about out of VERIFIED predicates only."""
+    facts: dict = {}
+    for a in report.attestations:
+        if not a.verified or not a.predicate:
+            continue
+        p = a.predicate
+        if a.predicate_type == BUILD_PROVENANCE_PREDICATE:
+            wf = _dig(p, "buildDefinition", "externalParameters", "workflow") or {}
+            gh = _dig(p, "buildDefinition", "internalParameters", "github") or {}
+            dep = _dig(p, "buildDefinition", "resolvedDependencies", 0) or {}
+            tlog = a.tlog or {}
+            facts.update(
+                rekor_log_index=tlog.get("log_index"), rekor_integrated_time=tlog.get("integrated_time"),
+                workflow_repository=wf.get("repository"), workflow_path=wf.get("path"), workflow_ref=wf.get("ref"),
+                builder_id=_dig(p, "runDetails", "builder", "id"),
+                event_name=gh.get("event_name"), runner_environment=gh.get("runner_environment"),
+                build_commit=_dig(dep, "digest", "gitCommit"), build_commit_uri=dep.get("uri"),
+                invocation=_dig(p, "runDetails", "metadata", "invocationId"),
+            )
+        elif "upstream_commit" in p:
+            for k in ("upstream_repo", "upstream_tag", "upstream_commit", "tree_clean", "snapshot_archive_name"):
+                if k in p:
+                    facts[k] = p[k]
+    return {k: v for k, v in facts.items() if v is not None}
+
+
+_USES_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*['\"]?([^\s'\"#]+)")
+_SHA_RE = re.compile(r"@[0-9a-f]{40}$")
+
+
+def audit_workflow_pins(text: str):
+    """(number of external `uses:` refs, [refs not pinned to a full commit SHA]).
+    Local `./` actions are skipped; docker:// refs must carry an @sha256: digest."""
+    total, bad = 0, []
+    for line in text.splitlines():
+        m = _USES_RE.match(line)
+        if not m:
+            continue
+        ref = m.group(1)
+        if ref.startswith("./"):
+            continue
+        total += 1
+        ok = ("@sha256:" in ref) if ref.startswith("docker://") else bool(_SHA_RE.search(ref))
+        if not ok:
+            bad.append(ref)
+    return total, bad
+
+
+def _fetch_text(url: str) -> str:
+    with urllib.request.urlopen(url, timeout=15) as resp:
+        return resp.read().decode("utf-8")
+
+
+def _finalize_checks(report: "VerifyReport", *, repo: str, workflow_file: str,
+                     expected_facts: Optional[dict], audit_pins: bool) -> None:
+    """Cross-check what the verified attestations say against what we expect."""
+    f = report.facts = _collect_facts(report)
+    mism, notes = report.mismatches, report.notes
+
+    for k, want in (expected_facts or {}).items():
+        if want is None:
+            continue
+        got = f.get(k)
+        if got is None:
+            notes.append(f"{k}: registry says {want!r}, but no verified attestation content to compare it with")
+        elif got != want:
+            mism.append(f"{k}: registry says {want!r}, but the wheel's own attestation says {got!r}")
+
+    if "upstream_commit" in f:
+        if f.get("tree_clean") is not True:
+            mism.append(f"upstream-source attestation does not assert tree_clean=true (got {f.get('tree_clean')!r})")
+
+    if f.get("workflow_repository") is not None and f["workflow_repository"] != f"https://github.com/{repo}":
+        mism.append(f"provenance says the workflow ran in {f['workflow_repository']}, expected https://github.com/{repo}")
+    if f.get("workflow_path") is not None and f["workflow_path"] != _workflow_path(workflow_file):
+        mism.append(f"provenance says workflow {f['workflow_path']}, expected {_workflow_path(workflow_file)}")
+
+    if not audit_pins:
+        return
+    commit, path, uri = f.get("build_commit"), f.get("workflow_path"), f.get("build_commit_uri", "")
+    if not commit or not path or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        notes.append("workflow pin audit skipped: provenance has no usable builds-repo commit")
+        return
+    if repo not in uri:
+        mism.append(f"provenance's build commit belongs to {uri!r}, not {repo}")
+        return
+    try:
+        text = _fetch_text(f"https://raw.githubusercontent.com/{repo}/{commit}/{path}")
+    except Exception as exc:  # network trouble is not a verification failure
+        notes.append(f"workflow pin audit skipped: could not fetch {path} at {commit[:12]} ({exc})")
+        return
+    total, bad = audit_workflow_pins(text)
+    report.pin_audit = (total, tuple(bad), path, commit)
+    if total == 0:
+        notes.append(f"workflow pin audit: found no `uses:` lines in {path} at {commit[:12]} - nothing to confirm")
+    elif bad:
+        mism.append(f"policy says SHA-pinned, but {path} at {commit[:12]} has unpinned actions: {', '.join(bad)}")
 
 
 def _split_bundle_lines(bundle_jsonl: Path) -> list:
@@ -134,6 +319,29 @@ def _split_bundle_lines(bundle_jsonl: Path) -> list:
         p.write_text(line)
         paths.append(p)
     return paths
+
+
+def _tlog_info(bundle_line_path: Path) -> Optional[dict]:
+    """The Rekor entry the bundle carries, or None. Only ever attached to an
+    attestation that a backend verified, so the numbers are not free-floating
+    claims from an unchecked file."""
+    try:
+        bundle = json.loads(bundle_line_path.read_text())
+    except (OSError, ValueError):
+        return None
+    entries = _dig(bundle, "verificationMaterial", "tlogEntries") or []
+    if not entries or not isinstance(entries[0], dict):
+        return None
+    e = entries[0]
+    try:
+        index = int(e.get("logIndex"))
+    except (TypeError, ValueError):
+        return None
+    try:
+        when: Optional[int] = int(e.get("integratedTime"))
+    except (TypeError, ValueError):
+        when = None
+    return {"log_index": index, "integrated_time": when, "log_id": _dig(e, "logId", "keyId")}
 
 
 def _decode_predicate(bundle_line_path: Path):
@@ -175,7 +383,8 @@ def _verify_with_sigstore(wheel_path: Path, bundle_jsonl_path: Path, *, repo: st
             ))
             continue
         ok, detail = _sigstore_verify_identity(wheel_path, line_path, cert_identity, verbose=verbose)
-        results.append(AttestationResult(predicate_type, predicate, verified=ok, detail=detail))
+        results.append(AttestationResult(predicate_type, predicate, verified=ok, detail=detail,
+                                         tlog=_tlog_info(line_path)))
     return results
 
 
@@ -250,8 +459,11 @@ def _verify_with_gh(wheel_path: Path, *, repo: str, workflow_file: str, upstream
         for line_path in _split_bundle_lines(bundle_path):
             predicate_type, predicate = _decode_predicate(line_path)
             for r in results:
-                if r.predicate_type == predicate_type and not r.predicate:
-                    r.predicate = predicate
+                if r.predicate_type == predicate_type:
+                    if not r.predicate:
+                        r.predicate = predicate
+                    if r.tlog is None:
+                        r.tlog = _tlog_info(line_path)
     except VerificationError as exc:
         download_error = str(exc)
 
@@ -271,6 +483,10 @@ def verify_wheel(
     source_archive_path: Optional[Path] = None,
     backend: str = "auto",
     verbose: int = 0,
+    expected_policy_version: Optional[str] = None,
+    required_predicate_types: tuple = (),
+    expected_facts: Optional[dict] = None,
+    audit_pins: bool = False,
 ) -> VerifyReport:
     if not wheel_path.exists():
         raise VerificationError(f"wheel not found: {wheel_path}")
@@ -288,7 +504,11 @@ def verify_wheel(
                 "details. Refusing to treat an unverifiable wheel as trusted."
             )
 
-    report = VerifyReport(wheel=wheel_path, backend=chosen)
+    report = VerifyReport(
+        wheel=wheel_path, backend=chosen,
+        required_predicate_types=tuple(required_predicate_types),
+        expected_policy_version=expected_policy_version,
+    )
 
     if chosen == "sigstore":
         if bundle_jsonl_path is None:
@@ -303,6 +523,53 @@ def verify_wheel(
         )
     else:
         raise VerificationError(f"unknown backend: {chosen!r}")
+
+    # `auto` runs EVERY usable backend, not just the first: sigstore checks
+    # the local bundle offline, gh asks GitHub online. Both must agree; a
+    # missing one is only a note (sigstore is an optional dependency).
+    if backend == "auto":
+        other = "gh" if chosen == "sigstore" else "sigstore"
+        try:
+            if other == "gh" and gh_available():
+                atts, _err = _verify_with_gh(
+                    wheel_path, repo=repo, workflow_file=workflow_file,
+                    upstream_predicate_type=upstream_predicate_type, verbose=verbose,
+                )
+            elif other == "sigstore" and sigstore_available() and bundle_jsonl_path is not None:
+                atts = _verify_with_sigstore(
+                    wheel_path, bundle_jsonl_path, repo=repo, workflow_file=workflow_file, ref=ref, verbose=verbose,
+                )
+            else:
+                atts = None
+        except VerificationError as exc:
+            atts = None
+            report.notes.append(f"{other} cross-check could not run: {exc}")
+        if atts is not None:
+            bad = [a.predicate_type or "(unknown predicate)" for a in atts if not a.ignored and not a.verified]
+            if bad:
+                report.mismatches.append(f"{other} backend disagrees with {chosen}: failed {', '.join(bad)}")
+            else:
+                report.cross_checked_by.append(other)
+
+    if expected_policy_version is not None:
+        found = sorted({
+            str(v) for a in report.attestations if a.verified and a.predicate
+            for v in _find_values(a.predicate, "policy_version")
+        })
+        report.found_policy_versions = tuple(found)
+        if not found:
+            report.policy_note = (
+                f"registry says policy {expected_policy_version}, but no verified attestation predicate "
+                "carries a policy_version to compare it with"
+                + (f" ({report.archive_check_error})" if report.archive_check_error else "")
+            )
+        else:
+            report.policy_ok = found == [expected_policy_version]
+            if not report.policy_ok:
+                report.policy_note = (
+                    f"registry says policy {expected_policy_version}, but the wheel's own attestation says "
+                    f"{', '.join(found)}"
+                )
 
     if source_archive_path is not None:
         report.archive_checked = True
@@ -324,7 +591,13 @@ def verify_wheel(
                     "(predicate content was retrieved, but the digest was genuinely absent)"
                 )
         else:
-            actual = hashlib.sha256(source_archive_path.read_bytes()).hexdigest()
-            report.archive_ok = (actual == expected)
+            h = hashlib.sha256()
+            with source_archive_path.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+            report.archive_bytes = source_archive_path.stat().st_size
+            report.archive_ok = (h.hexdigest() == expected)
 
+    _finalize_checks(report, repo=repo, workflow_file=workflow_file,
+                     expected_facts=expected_facts, audit_pins=audit_pins)
     return report
